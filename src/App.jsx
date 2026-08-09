@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
-const BACKEND_URL = "https://speechinterview-backend.onrender.com/";
+const BACKEND_URL = "https://speechinterview-backend.onrender.com";
 
 const SILENCE_DURATION_MS = 1400;
 const SILENCE_THRESHOLD = 12;
