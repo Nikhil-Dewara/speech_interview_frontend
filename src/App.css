@@ -8,11 +8,11 @@
   --paper: #eceef5;
   --dust: #868c9e;
 
-  --signal: #f5a431;    /* listening / recording */
-  --speaking: #5fa8e0;  /* ai speaking */
-  --thinking: #b07cf0;  /* processing */
-  --done: #4fc98c;      /* complete */
-  --idle: #565c70;      /* connecting / standby */
+  --signal: #f5a431;
+  --speaking: #5fa8e0;
+  --thinking: #b07cf0;
+  --done: #4fc98c;
+  --idle: #565c70;
 
   --font-display: "Space Grotesk", "Segoe UI", sans-serif;
   --font-body: "Inter", "Segoe UI", sans-serif;
@@ -120,6 +120,27 @@ body {
   border-radius: 50%;
   background: var(--signal);
   flex-shrink: 0;
+}
+
+.lobby-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--signal);
+  background: rgba(245, 164, 49, 0.1);
+  border: 1px solid rgba(245, 164, 49, 0.3);
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin-bottom: 22px;
+}
+
+.lobby-notice--inline {
+  max-width: 340px;
+  margin: 0 auto 20px;
+  justify-content: center;
+  text-align: center;
 }
 
 .begin-btn {
@@ -386,6 +407,83 @@ body {
 .transcript-body::-webkit-scrollbar-track { background: transparent; }
 .transcript-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
 
+/* ---------- Demo end overlay ---------- */
+
+.demo-end-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(13, 15, 22, 0.72);
+  backdrop-filter: blur(10px);
+  animation: overlay-in 0.35s ease;
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.demo-end-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 36px 32px;
+  text-align: center;
+  animation: card-in 0.4s cubic-bezier(.22,1,.36,1);
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.demo-end-eyebrow {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--done);
+  margin-bottom: 14px;
+}
+
+.demo-end-card h2 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 24px;
+  margin: 0 0 12px;
+}
+
+.demo-end-card p {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--dust);
+  margin: 0 0 22px;
+}
+
+.demo-end-link {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--paper);
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 18px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.demo-end-link:hover {
+  border-color: var(--speaking);
+  background: rgba(95, 168, 224, 0.08);
+}
+
 @media (max-width: 480px) {
   .lobby-card { padding: 30px 24px; }
   .lobby-title { font-size: 28px; }
@@ -398,7 +496,9 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .rec-dot.phase-listening,
   .lens.phase-ai_speaking .lens-glow,
-  .lens.phase-processing .lens-glow {
+  .lens.phase-processing .lens-glow,
+  .demo-end-overlay,
+  .demo-end-card {
     animation: none;
   }
 }

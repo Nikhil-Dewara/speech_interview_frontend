@@ -4,16 +4,18 @@ import "./App.css";
 // const BACKEND_URL = "http://localhost:8000";
 const BACKEND_URL = "https://speechinterview-backend.onrender.com";
 
-
 const SILENCE_DURATION_MS = 1400;
-const SILENCE_THRESHOLD = 12;   // floor — never go below this even if the room is dead silent
-const NOISE_MARGIN = 10;        // how far above the measured ambient noise "speech" must rise
-const CALIBRATION_MS = 450;     // how long to sample ambient noise before recording starts
+const SILENCE_THRESHOLD = 12;
+const NOISE_MARGIN = 10;
+const CALIBRATION_MS = 450;
 const MAX_RECORDING_MS = 30000;
 const BAR_COUNT = 28;
 
-// Samples the mic for a brief moment before recording starts, so background
-// hum/fan/echo isn't mistaken for the candidate still talking.
+// Hard cap on total demo length, in seconds. Once reached, the app stops
+// everything immediately — no more Whisper/LLM/TTS calls get triggered —
+// so a curious visitor clicking around can't run the meter indefinitely.
+const MAX_DEMO_SECONDS = 180; // 3 minutes
+
 function calibrateNoiseFloor(analyser, freqData) {
   return new Promise((resolve) => {
     const samples = [];
@@ -44,6 +46,7 @@ function App() {
   const [transcript, setTranscript] = useState([]);
   const [bars, setBars] = useState(Array(BAR_COUNT).fill(0.06));
   const [elapsed, setElapsed] = useState(0);
+  const [demoCapped, setDemoCapped] = useState(false);
 
   const audioRef = useRef(null);
   const sessionIdRef = useRef(null);
@@ -55,6 +58,9 @@ function App() {
   const hasSpokenRef = useRef(false);
   const animationFrameRef = useRef(null);
   const transcriptEndRef = useRef(null);
+  // A ref (not state) so it's readable synchronously inside callbacks
+  // like recorder.onstop, without waiting for a re-render.
+  const demoEndedRef = useRef(false);
 
   useEffect(() => {
     if (!started) return;
@@ -69,9 +75,31 @@ function App() {
 
   useEffect(() => {
     if (!started || phase === "complete") return;
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    const id = setInterval(() => {
+      setElapsed((e) => {
+        const next = e + 1;
+        if (next >= MAX_DEMO_SECONDS) endDemo();
+        return next;
+      });
+    }, 1000);
     return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [started, phase]);
+
+  // Stops everything immediately — no further audio, no further backend
+  // calls — and shows the "thanks for trying it" popup.
+  function endDemo() {
+    if (demoEndedRef.current) return;
+    demoEndedRef.current = true;
+
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop(); // onstop is guarded below, won't submit
+    }
+    cleanupAudio();
+    audioRef.current?.pause();
+    setDemoCapped(true);
+    setPhase("complete");
+  }
 
   async function startInterview() {
     setPhase("connecting");
@@ -86,20 +114,27 @@ function App() {
   }
 
   function playAudioThenListen(base64Audio) {
+    if (demoEndedRef.current) return;
     setPhase("ai_speaking");
     audioRef.current.src = `data:audio/wav;base64,${base64Audio}`;
     audioRef.current.play();
   }
 
   function handleAudioEnded() {
-    if (phase !== "complete") startListening();
+    if (demoEndedRef.current || phase === "complete") return;
+    startListening();
   }
 
   async function startListening() {
+    if (demoEndedRef.current) return;
     setPhase("listening");
     hasSpokenRef.current = false;
 
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (demoEndedRef.current) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
     streamRef.current = stream;
 
     const audioContext = new AudioContext();
@@ -111,9 +146,6 @@ function App() {
 
     const freqData = new Uint8Array(analyser.frequencyBinCount);
 
-    // Measure this room's ambient noise before we start recording, and set
-    // the "you're speaking" bar above it — fixes background noise (fans,
-    // echo, room hum) getting mistaken for the candidate continuing to talk.
     const noiseFloor = await calibrateNoiseFloor(analyser, freqData);
     const dynamicThreshold = Math.max(SILENCE_THRESHOLD, noiseFloor + NOISE_MARGIN);
 
@@ -123,6 +155,7 @@ function App() {
 
     recorder.ondataavailable = (e) => chunks.push(e.data);
     recorder.onstop = () => {
+      if (demoEndedRef.current) return;
       const blob = new Blob(chunks, { type: "audio/webm" });
       submitAnswer(blob);
     };
@@ -160,7 +193,7 @@ function App() {
       mediaRecorderRef.current.stop();
     }
     cleanupAudio();
-    setPhase("processing");
+    if (!demoEndedRef.current) setPhase("processing");
   }
 
   function cleanupAudio() {
@@ -175,6 +208,8 @@ function App() {
   }
 
   const submitAnswer = useCallback(async (blob) => {
+    if (demoEndedRef.current) return;
+
     const formData = new FormData();
     formData.append("audio", blob, "answer.webm");
 
@@ -183,6 +218,8 @@ function App() {
       body: formData,
     });
     const data = await response.json();
+
+    if (demoEndedRef.current) return;
 
     setTranscript((prev) => [
       ...prev,
@@ -218,15 +255,19 @@ function App() {
             <span className="lobby-eyebrow">Voice Interview Screener</span>
             <h1 className="lobby-title">Ready when you are.</h1>
             <p className="lobby-copy">
-              This is a short spoken interview, about six to eight questions. The
-              interviewer asks something, you answer out loud, and it moves on once
-              you go quiet. Find a quiet room and keep your mic close.
+              This is a short spoken interview demo (about 3 minutes). The
+              interviewer asks something, you answer out loud, and it moves
+              on once you go quiet. Find a quiet room and keep your mic close.
             </p>
             <ul className="lobby-checklist">
               <li><span className="check-dot" />Microphone access required</li>
               <li><span className="check-dot" />Answers are transcribed automatically</li>
-              <li><span className="check-dot" />Takes about 8–10 minutes</li>
+              <li><span className="check-dot" />Demo is capped at ~3 minutes</li>
             </ul>
+            <div className="lobby-notice">
+              ⏳ Please wait — the first response can take up to a minute
+              while the AI wakes up from idle.
+            </div>
             <button className="begin-btn" onClick={() => setStarted(true)}>
               Begin interview
             </button>
@@ -274,6 +315,11 @@ function App() {
           {phaseCopy.label}
         </div>
         {phaseCopy.hint && <p className="phase-hint">{phaseCopy.hint}</p>}
+        {phase === "connecting" && (
+          <div className="lobby-notice lobby-notice--inline">
+            ⏳ Please wait — this can take up to a minute on the first request.
+          </div>
+        )}
 
         <section className="transcript">
           <div className="transcript-head">Transcript</div>
@@ -293,6 +339,30 @@ function App() {
       </main>
 
       <audio ref={audioRef} onEnded={handleAudioEnded} />
+
+      {phase === "complete" && (
+        <div className="demo-end-overlay">
+          <div className="demo-end-card">
+            <span className="demo-end-eyebrow">
+              {demoCapped ? "Demo time limit reached" : "Session ended"}
+            </span>
+            <h2>Thanks for trying it out!</h2>
+            <p>
+              {demoCapped
+                ? "This demo is capped at a few minutes to keep hosting costs manageable — hope that was enough to get a feel for it."
+                : "The interviewer wrapped up the session. Thanks for taking the time to chat."}
+            </p>
+            <a
+              className="demo-end-link"
+              href="https://github.com/Nikhil-Dewara"
+              target="_blank"
+              rel="noreferrer"
+            >
+              View the code on GitHub →
+            </a>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
