@@ -1,18 +1,49 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import "./App.css";
 
+// const BACKEND_URL = "http://localhost:8000";
 const BACKEND_URL = "https://speechinterview-backend.onrender.com";
 
+
 const SILENCE_DURATION_MS = 1400;
-const SILENCE_THRESHOLD = 12;
+const SILENCE_THRESHOLD = 12;   // floor — never go below this even if the room is dead silent
+const NOISE_MARGIN = 10;        // how far above the measured ambient noise "speech" must rise
+const CALIBRATION_MS = 450;     // how long to sample ambient noise before recording starts
 const MAX_RECORDING_MS = 30000;
-const BAR_COUNT = 24;
+const BAR_COUNT = 28;
+
+// Samples the mic for a brief moment before recording starts, so background
+// hum/fan/echo isn't mistaken for the candidate still talking.
+function calibrateNoiseFloor(analyser, freqData) {
+  return new Promise((resolve) => {
+    const samples = [];
+    const start = performance.now();
+    function sample() {
+      analyser.getByteFrequencyData(freqData);
+      samples.push(freqData.reduce((a, b) => a + b, 0) / freqData.length);
+      if (performance.now() - start < CALIBRATION_MS) {
+        requestAnimationFrame(sample);
+      } else {
+        resolve(samples.reduce((a, b) => a + b, 0) / samples.length);
+      }
+    }
+    sample();
+  });
+}
+
+function formatElapsed(seconds) {
+  const m = Math.floor(seconds / 60).toString().padStart(2, "0");
+  const s = Math.floor(seconds % 60).toString().padStart(2, "0");
+  return `${m}:${s}`;
+}
 
 function App() {
+  const [started, setStarted] = useState(false);
   const [sessionId, setSessionId] = useState(null);
-  const [phase, setPhase] = useState("connecting");
+  const [phase, setPhase] = useState("idle");
   const [transcript, setTranscript] = useState([]);
-  const [bars, setBars] = useState(Array(BAR_COUNT).fill(0.05));
+  const [bars, setBars] = useState(Array(BAR_COUNT).fill(0.06));
+  const [elapsed, setElapsed] = useState(0);
 
   const audioRef = useRef(null);
   const sessionIdRef = useRef(null);
@@ -26,14 +57,21 @@ function App() {
   const transcriptEndRef = useRef(null);
 
   useEffect(() => {
+    if (!started) return;
     startInterview();
     return () => cleanupAudio();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [started]);
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [transcript]);
+
+  useEffect(() => {
+    if (!started || phase === "complete") return;
+    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
+    return () => clearInterval(id);
+  }, [started, phase]);
 
   async function startInterview() {
     setPhase("connecting");
@@ -54,7 +92,7 @@ function App() {
   }
 
   function handleAudioEnded() {
-    startListening();
+    if (phase !== "complete") startListening();
   }
 
   async function startListening() {
@@ -72,6 +110,12 @@ function App() {
     source.connect(analyser);
 
     const freqData = new Uint8Array(analyser.frequencyBinCount);
+
+    // Measure this room's ambient noise before we start recording, and set
+    // the "you're speaking" bar above it — fixes background noise (fans,
+    // echo, room hum) getting mistaken for the candidate continuing to talk.
+    const noiseFloor = await calibrateNoiseFloor(analyser, freqData);
+    const dynamicThreshold = Math.max(SILENCE_THRESHOLD, noiseFloor + NOISE_MARGIN);
 
     const recorder = new MediaRecorder(stream);
     mediaRecorderRef.current = recorder;
@@ -94,9 +138,9 @@ function App() {
       analyser.getByteFrequencyData(freqData);
       const avg = freqData.reduce((a, b) => a + b, 0) / freqData.length;
 
-      setBars(barIndices.map((idx) => Math.max(0.05, freqData[idx] / 255)));
+      setBars(barIndices.map((idx) => Math.max(0.06, freqData[idx] / 255)));
 
-      if (avg > SILENCE_THRESHOLD) {
+      if (avg > dynamicThreshold) {
         hasSpokenRef.current = true;
         if (silenceTimerRef.current) {
           clearTimeout(silenceTimerRef.current);
@@ -127,7 +171,7 @@ function App() {
     if (audioContextRef.current && audioContextRef.current.state !== "closed") {
       audioContextRef.current.close();
     }
-    setBars(Array(BAR_COUNT).fill(0.05));
+    setBars(Array(BAR_COUNT).fill(0.06));
   }
 
   const submitAnswer = useCallback(async (blob) => {
@@ -150,65 +194,102 @@ function App() {
       setPhase("complete");
       audioRef.current.src = `data:audio/wav;base64,${data.audio_base64}`;
       audioRef.current.play();
-      return; // don't start listening again — the interview is over
+      return;
     }
 
     playAudioThenListen(data.audio_base64);
   }, []);
 
-  const phaseLabel = {
-    connecting: "Connecting",
-    ai_speaking: "Interviewer speaking",
-    listening: "Listening",
-    processing: "Thinking",
-    complete: "Interview complete",
+  const phaseCopy = {
+    idle: { label: "Standby", hint: "" },
+    connecting: { label: "Connecting", hint: "Setting up your session" },
+    ai_speaking: { label: "Interviewer speaking", hint: "Listen closely, then respond naturally" },
+    listening: { label: "Recording", hint: "Speak now — pauses briefly to end your turn" },
+    processing: { label: "Thinking", hint: "Reviewing your answer" },
+    complete: { label: "Interview complete", hint: "Thanks for your time" },
   }[phase];
+
+  if (!started) {
+    return (
+      <div className="app">
+        <div className="grain" />
+        <div className="lobby">
+          <div className="lobby-card">
+            <span className="lobby-eyebrow">Voice Interview Screener</span>
+            <h1 className="lobby-title">Ready when you are.</h1>
+            <p className="lobby-copy">
+              This is a short spoken interview, about six to eight questions. The
+              interviewer asks something, you answer out loud, and it moves on once
+              you go quiet. Find a quiet room and keep your mic close.
+            </p>
+            <ul className="lobby-checklist">
+              <li><span className="check-dot" />Microphone access required</li>
+              <li><span className="check-dot" />Answers are transcribed automatically</li>
+              <li><span className="check-dot" />Takes about 8–10 minutes</li>
+            </ul>
+            <button className="begin-btn" onClick={() => setStarted(true)}>
+              Begin interview
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="app">
-      <div className="ambient-bg" />
+      <div className="grain" />
 
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-dot" />
-          <span className="brand-name">Voice Interview Screener</span>
+      <header className="console-bar">
+        <div className="console-left">
+          <span className={`rec-dot phase-${phase}`} />
+          <span className="rec-label">{phase === "complete" ? "ENDED" : "REC"}</span>
+          <span className="rec-timer">{formatElapsed(elapsed)}</span>
         </div>
-        {sessionId && (
-          <span className="session-chip">session&nbsp;{sessionId.slice(0, 8)}</span>
-        )}
+        <div className="console-center">Voice Interview Screener</div>
+        <div className="console-right">
+          {sessionId && <span className="session-chip">#{sessionId.slice(0, 8)}</span>}
+        </div>
       </header>
 
       <main className="stage">
-        <div className="orb-wrap">
-          <div className={`orb-ring orb-ring--1 phase-${phase}`} />
-          <div className={`orb-ring orb-ring--2 phase-${phase}`} />
-          <div className={`orb-core phase-${phase}`}>
-            <div className="orb-shine" />
+        <div className="dial-wrap">
+          <div className={`dial-ring ${phase === "listening" ? "dial-ring--active" : ""}`}>
+            {bars.map((h, i) => (
+              <span
+                key={i}
+                className={`tick phase-${phase}`}
+                style={{ "--angle": `${(i / BAR_COUNT) * 360}deg`, "--h": h }}
+              />
+            ))}
+          </div>
+          <div className={`lens phase-${phase}`}>
+            <div className="lens-glow" />
+            <div className="lens-inner" />
           </div>
         </div>
 
-        <div className={`status-row phase-${phase}`}>
-          <span className="status-dot" />
-          <span className="status-text">{phaseLabel}</span>
+        <div className={`phase-pill phase-${phase}`}>
+          <span className="phase-pill-dot" />
+          {phaseCopy.label}
         </div>
+        {phaseCopy.hint && <p className="phase-hint">{phaseCopy.hint}</p>}
 
-        <div className={`waveform ${phase === "listening" ? "waveform--active" : ""}`}>
-          {bars.map((h, i) => (
-            <span key={i} className="waveform-bar" style={{ "--h": h }} />
-          ))}
-        </div>
-
-        <div className="transcript">
-          {transcript.map((turn, i) => (
-            <div key={i} className={`turn turn--${turn.role}`}>
-              <span className="turn-role">
-                {turn.role === "ai" ? "Interviewer" : "You"}
-              </span>
-              <p className="turn-text">{turn.text}</p>
-            </div>
-          ))}
-          <div ref={transcriptEndRef} />
-        </div>
+        <section className="transcript">
+          <div className="transcript-head">Transcript</div>
+          <div className="transcript-body">
+            {transcript.map((turn, i) => (
+              <div key={i} className={`log-row log-row--${turn.role}`}>
+                <span className="log-index">{String(i + 1).padStart(2, "0")}</span>
+                <span className="log-role">
+                  {turn.role === "ai" ? "Interviewer" : "You"}
+                </span>
+                <p className="log-text">{turn.text}</p>
+              </div>
+            ))}
+            <div ref={transcriptEndRef} />
+          </div>
+        </section>
       </main>
 
       <audio ref={audioRef} onEnded={handleAudioEnded} />
